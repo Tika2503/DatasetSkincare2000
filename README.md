@@ -34,27 +34,25 @@ This command will:
 | `price_idr` | integer | Product price in Indonesian Rupiah |
 | `rating` | float (1 decimal) | Product rating from 1.0 to 5.0 |
 | `review_count` | integer | Number of product reviews |
-| `image_url` | string | Valid image URL (GitHub-hosted image with deterministic seed query) |
+| `image_url` | string | Valid image URL (GitHub-hosted image) |
 | `description` | string | Short product description |
 
 ## JavaScript fetch & parse example
 
 ```html
 <script type="module">
+  import Papa from 'https://cdn.skypack.dev/papaparse@5.4.1';
+
   async function loadSkincareData() {
     const response = await fetch('/skincare_dataset_2000.csv');
     const csvText = await response.text();
 
-    const [headerLine, ...rows] = csvText.trim().split('\n');
-    const headers = headerLine.split(',');
-
-    const data = rows.map((row) => {
-      // Basic CSV split for demo usage.
-      // For production, use a robust parser like Papa Parse.
-      const cols = row.match(/("[^"]*"|[^,]+)/g) ?? [];
-      const values = cols.map((v) => v.replace(/^"|"$/g, '').replace(/""/g, '"'));
-      return Object.fromEntries(headers.map((h, i) => [h, values[i] ?? '']));
+    const parsed = Papa.parse(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      dynamicTyping: true,
     });
+    const data = parsed.data;
 
     console.log('Loaded rows:', data.length);
     console.log('First product:', data[0]);

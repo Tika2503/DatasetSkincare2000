@@ -8,9 +8,11 @@ import csv
 import random
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 
 COLUMNS = [
     "id",
@@ -165,7 +167,7 @@ PREMIUM_BRANDS = {
     "Bioderma",
 }
 
-IMAGE_TOPICS = [
+GITHUB_TOPIC_NAMES = [
     "javascript",
     "react",
     "vue",
@@ -277,11 +279,8 @@ def generate_products(total_rows: int, seed: int = 2503) -> list[Product]:
         rating = pick_rating(randomizer)
         review_count = pick_review_count(randomizer)
 
-        topic = IMAGE_TOPICS[(product_id - 1) % len(IMAGE_TOPICS)]
-        image_url = (
-            f"https://raw.githubusercontent.com/github/explore/main/topics/{topic}/{topic}.png"
-            f"?seed=skincare{product_id}"
-        )
+        topic = GITHUB_TOPIC_NAMES[(product_id - 1) % len(GITHUB_TOPIC_NAMES)]
+        image_url = f"https://raw.githubusercontent.com/github/explore/main/topics/{topic}/{topic}.png"
         product_name = build_product_name(brand, category, ingredients, randomizer)
         description = create_description(category, skin_type, ingredients, benefits)
 
@@ -315,8 +314,6 @@ def write_csv(products: list[Product], output_path: Path) -> None:
 
 
 def verify_with_pandas(path: Path, expected_rows: int) -> None:
-    import pandas as pd
-
     df = pd.read_csv(path)
 
     if len(df) != expected_rows:
@@ -346,32 +343,38 @@ def verify_with_pandas(path: Path, expected_rows: int) -> None:
     if missing_values:
         raise ValueError("CSV contains empty required fields")
 
-    empty_strings = (df[required_columns].astype(str).apply(lambda col: col.str.strip() == "")).any().any()
+    empty_strings = any(str(value).strip() == "" for value in df[required_columns].to_numpy().ravel())
     if empty_strings:
         raise ValueError("CSV contains blank required fields")
 
 
+def _validate_single_image_url(image_url: str, timeout: float, retries: int) -> None:
+    request = urllib.request.Request(
+        image_url,
+        method="GET",
+        headers={"User-Agent": "DatasetSkincare2000/1.0"},
+    )
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                content_type = response.headers.get("Content-Type", "")
+                if response.status != 200 or not content_type.startswith("image/"):
+                    raise ValueError(
+                        f"Image URL validation failed for {image_url}: "
+                        f"status={response.status}, content_type={content_type}"
+                    )
+            return
+        except Exception as err:
+            if attempt == retries:
+                raise ValueError(f"Image URL validation failed for {image_url}: {err}") from err
+            time.sleep(0.5)
+
+
 def validate_image_urls(products: list[Product], timeout: float = 10.0, retries: int = 2) -> None:
-    for image_url in sorted({product.image_url for product in products}):
-        request = urllib.request.Request(
-            image_url,
-            method="GET",
-            headers={"User-Agent": "DatasetSkincare2000/1.0"},
-        )
-        for attempt in range(retries + 1):
-            try:
-                with urllib.request.urlopen(request, timeout=timeout) as response:
-                    content_type = response.headers.get("Content-Type", "")
-                    if response.status != 200 or not content_type.startswith("image/"):
-                        raise ValueError(
-                            f"Image URL validation failed for {image_url}: "
-                            f"status={response.status}, content_type={content_type}"
-                        )
-                break
-            except Exception:
-                if attempt == retries:
-                    raise
-                time.sleep(0.5)
+    # URLs are intentionally cycled from GITHUB_TOPIC_NAMES, so deduplication keeps validation fast.
+    unique_urls = sorted({product.image_url for product in products})
+    with ThreadPoolExecutor(max_workers=min(8, len(unique_urls))) as executor:
+        list(executor.map(lambda url: _validate_single_image_url(url, timeout, retries), unique_urls))
 
 
 def parse_args() -> argparse.Namespace:
